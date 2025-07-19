@@ -7,10 +7,13 @@ services:
     ports:
       - "80:80" # HTTP
       - "8080:8080" # Dashboard
+      - "443:443" # HTTPS
     restart: always
     volumes:
       # Add docker as a mounte volume to allow Traefik to read the Docker labels of other containers
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mount the volume to store the certificates (for HTTPS), mesmo se restartar o container os certificados não serão perdidos
+      - traefik-public-certificates:/certificates
     command:
       #Enable docker in Traefik, so that it can read the labels from Docker services
       - "--providers.docker=true"  # Enable Docker provider
@@ -18,16 +21,33 @@ services:
       - "--providers.docker.exposedbydefault=false"
       #Create a entrypoint for HTTP traffic on port 80
       - "--entrypoints.web.address=:80"
+      
+      #--------------------------- HTTPS ---------------------------
+      #Create a entrypoint for HTTPS traffic on port 443
+      - "--entrypoints.websecure.address=:443"
+      #Create the certificate resolver "le for Let's Encrypt", uses the environment variables EMAIL
+      - --certificatesresolvers.le.acme.email=alee.borali@gmail.com
+      # Store the Let's Encrypt certificates in the mounted volume
+      - --certificatesresolvers.le.acme.storage=/certificates/acme.json
+      # Use the TLS challenge for let's encrypt
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      #-------------------------------------------------------------
+
       #Enable the acess log, with https requests
       - "--accesslog=true"
       #Enable the dashboard on port 8080
       - "--api.insecure=true" # Enable the dashboard
       #Enable the traefik log, forconfguration and debugging
       - --log
+
     networks:
       #Use the public network created to be shared between Traefik and
       # any other service that needs to be publicly available with Traefik
       - traefik-public
+
+volumes:
+  # Create a volume to store the certificates, so that they are not lost if the container is restarted
+  traefik-public-certificates:
 
 networks:
   traefik-public:

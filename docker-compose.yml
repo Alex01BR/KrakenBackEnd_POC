@@ -17,6 +17,21 @@ services:
       - traefik.http.routers.app-http.rule=Host(`13.221.236.143`)
       # Use the traefik public network
       - traefik.docker.network=traefik-public
+
+      #--------------HTTPS----------------
+      # Make Traefik use this domain in HTTPS
+      - traefik.http.routers.app-https.entrypoint=https
+      - traefik.http.routers.app-https.rule=Host(`13.221.236.143')
+      - traefik.http.routers.app-https.tls=true
+      # Use the certificate resolver "le" for Let's Encrypt
+      - traefik.http.routers.app-https.tls.certresolver=le
+      # https redirection middlewareto redirect HTTP to HTTPS (creation of a middleware, not use yet)
+      - traefik.http.middleware.https-redirect.redirectscheme.scheme=https
+      - traefik.http.middleware.https-redirect.redirectscheme.permanent=true
+      # Use the middleware to redirect HTTP to HTTPS (now using the middleware)
+      - traefik.http.routers.app-http.middlewares=https-redirect
+      #------------------------------------
+
     networks:
       # Use the public network created to be shared between Traefik and
       # any other service that needs to be publicly available with Traefik
