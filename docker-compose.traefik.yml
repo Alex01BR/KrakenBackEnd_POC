@@ -6,6 +6,7 @@ services:
     #Listen on port 80, default HTTP port necessary to redirect to HTTPS
     ports:
       - "80:80" # HTTP
+      - "8080:8080" # Dashboard
     restart: always
     volumes:
       # Add docker as a mounte volume to allow Traefik to read the Docker labels of other containers
