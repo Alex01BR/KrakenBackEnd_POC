@@ -1,11 +1,32 @@
 services:
   
+  # Banco de dados PostgreSQL
+  db:
+    image: postgres:13
+    restart: always
+    environment:
+      POSTGRES_DB: kraken_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - traefik-public
+  
   backend:
     # o comando build especifica o diretório onde o Dockerfile está localizado
     # neste caso, o diretório atual (./)
     build: ./
     #o comando restart sempre reinicia o contêiner se ele falhar
     restart: always
+    
+    # Variáveis de ambiente para conectar ao PostgreSQL
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/kraken_db
+    
+    # Depende do banco de dados
+    depends_on:
+      - db
     
     labels:
       # Define o nome do serviço para o Traefik
@@ -36,6 +57,10 @@ services:
       # Use the public network created to be shared between Traefik and
       # any other service that needs to be publicly available with Traefik
       - traefik-public
+
+volumes:
+  # Volume para persistir os dados do PostgreSQL
+  postgres_data:
 
 networks:
   traefik-public:
