@@ -1,0 +1,11 @@
+services:
+  
+  backend:
+    # o comando build especifica o diretório onde o Dockerfile está localizado
+    # neste caso, o diretório atual (./)
+    build: ./
+    #o comando restart sempre reinicia o contêiner se ele falhar
+    restart: always
+    # o comando ports mapeia a porta 80 do host para a porta 80 do contêiner
+    ports:
+      - "80:80"
