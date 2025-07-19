@@ -8,5 +8,5 @@ COPY ./app/requirements.txt /app/requirements.txt
 # Instala as dependências Python
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# O comando copy copia os arquivos do diretório atual (.) para o diretório /app/ dentro da imagem Docker.
-COPY ./app /app/
+# Copia todos os arquivos da pasta app local para o diretório /app do container
+COPY ./app /app

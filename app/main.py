@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 from typing import List
 
 # Importa nossos módulos
-from . import crud, models, schemas
-from .database import get_db, create_tables
+import crud
+import models
+import schemas
+from database import get_db, create_tables
 
 # Cria a aplicação FastAPI
 app = FastAPI(
