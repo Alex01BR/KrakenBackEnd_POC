@@ -20,7 +20,7 @@ services:
 
       #--------------HTTPS----------------
       # Make Traefik use this domain in HTTPS
-      - traefik.http.routers.app-https.entrypoint=websecure
+      - traefik.http.routers.app-https.entrypoints=websecure
       - traefik.http.routers.app-https.rule=Host(`13.221.236.143`)
       - traefik.http.routers.app-https.tls=true
       # Use the certificate resolver "le" for Let's Encrypt
