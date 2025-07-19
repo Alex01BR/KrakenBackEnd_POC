@@ -1,0 +1,38 @@
+services:
+
+  traefik:
+    #Use the lastest version of Traefik
+    image: traefik:v2.3
+    #Listen on port 80, default HTTP port necessary to redirect to HTTPS
+    ports:
+      - "80:80" # HTTP
+    restart: always
+    volumes:
+      # Add docker as a mounte volume to allow Traefik to read the Docker labels of other containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      #Enable docker in Traefik, so that it can read the labels from Docker services
+      - "--providers.docker=true"  # Enable Docker provider
+      #Do not expose all Docker services, only the ones explictly labeled
+      - "--providers.docker.exposedbydefault=false"
+      #Create a entrypoint for HTTP traffic on port 80
+      - "--entrypoints.web.address=:80"
+      #Enable the acess log, with https requests
+      - "--accesslog=true"
+      #Enable the dashboard on port 8080
+      - "--api.insecure=true" # Enable the dashboard
+      #Enable the traefik log, forconfguration and debugging
+      - --log
+    networks:
+      #Use the public network created to be shared between Traefik and
+      # any other service that needs to be publicly available with Traefik
+      - traefik-public
+
+networks:
+  traefik-public:
+    # Use the previously created network "traefik-public", shared with other
+    # services that need to be publicly available
+    external: true
+
+
+
