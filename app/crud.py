@@ -4,7 +4,8 @@ Funções que interagem diretamente com o banco de dados
 """
 
 from sqlalchemy.orm import Session
-from . import models, schemas
+import models
+import schemas
 import hashlib
 
 def hash_password(password: str) -> str:
