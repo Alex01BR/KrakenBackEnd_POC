@@ -35,14 +35,14 @@ services:
       - traefik.http.services.app.loadbalancer.server.port=80
       # Make Traefik use this domain in HTTP
       - traefik.http.routers.app-http.entrypoints=web
-      - traefik.http.routers.app-http.rule=Host(`13.221.236.143`)
+      - traefik.http.routers.app-http.rule=Host(`34.231.201.243`)
       # Use the traefik public network
       - traefik.docker.network=traefik-public
 
       #--------------HTTPS----------------
       # Make Traefik use this domain in HTTPS
       - traefik.http.routers.app-https.entrypoints=websecure
-      - traefik.http.routers.app-https.rule=Host(`13.221.236.143`)
+      - traefik.http.routers.app-https.rule=Host(`34.231.201.243`)
       - traefik.http.routers.app-https.tls=true
       # Use the certificate resolver "le" for Let's Encrypt
       - traefik.http.routers.app-https.tls.certresolver=le
