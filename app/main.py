@@ -17,6 +17,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import notifications
 from sqlalchemy.orm import Session as DBSession
+import logging
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("kraken_api")
 
 # Cria a aplicação FastAPI
 app = FastAPI(
@@ -31,18 +39,34 @@ async def startup_event():
     """
     Cria as tabelas do banco quando a aplicação inicia
     """
+    logger.info("🚀 Iniciando aplicação Kraken API...")
     create_tables()
-    # Agendador diário para enviar notificações
+    logger.info("✅ Tabelas do banco criadas/verificadas")
+    
+    # Agendador para enviar notificações a cada 5 minutos
     try:
         scheduler = BackgroundScheduler()
 
         def job_send_notifications():
             # Esse job roda a cada 5 minutos e envia notificações para dispositivos com itens expirando em até 7 dias
+            logger.info("=" * 80)
+            logger.info("⏰ [JOB SCHEDULER] Iniciando verificação de itens com vencimento próximo...")
             db = next(get_db())
             try:
                 pairs = crud.get_devices_with_expiring_items(db, within_days=7)
+                
+                if not pairs:
+                    logger.info("ℹ️ [JOB SCHEDULER] Nenhum dispositivo com itens próximos do vencimento encontrado")
+                    return
+                
+                logger.info(f"📱 [JOB SCHEDULER] Encontrados {len(pairs)} dispositivo(s) com itens vencendo...")
+                
                 messages = []
-                for device, items in pairs:
+                for device_idx, (device, items) in enumerate(pairs, 1):
+                    logger.info(f"  [{device_idx}] Device ID {device.id} | Token: {device.push_token[:20]}... | {len(items)} item(ns)")
+                    for item in items:
+                        logger.info(f"      - {item.name} | Vence em: {item.expiration_date}")
+                    
                     # Monta mensagem com detalhes dos itens expirando
                     title = "⚠️ Itens próximos do vencimento"
                     item_names = ", ".join([it.name for it in items[:3]])  # Até 3 itens no resumo
@@ -51,27 +75,36 @@ async def startup_event():
                     else:
                         body = f"{item_names}. Verifique a validade!"
                     messages.append({"to": device.push_token, "title": title, "body": body})
+                
                 if messages:
-                    notifications.send_many_expo_push(messages)
-                    print(f"[Notificações] {len(messages)} notificação(ões) enviada(s) em {datetime.utcnow()}")
+                    logger.info(f"📤 [JOB SCHEDULER] Enviando {len(messages)} notificação(ões) via Expo Push...")
+                    results = notifications.send_many_expo_push(messages)
+                    logger.info(f"✅ [JOB SCHEDULER] Envio concluído!")
+                else:
+                    logger.info("ℹ️ [JOB SCHEDULER] Nenhuma mensagem para enviar")
+                    
             except Exception as e:
-                print(f"[Notificações] Erro ao enviar notificações: {e}")
+                logger.error(f"❌ [JOB SCHEDULER] Erro ao enviar notificações: {e}", exc_info=True)
             finally:
                 db.close()
+            logger.info("=" * 80)
 
         # Agenda para rodar a cada 5 minutos
         scheduler.add_job(job_send_notifications, 'interval', minutes=5)
         scheduler.start()
         app.state.scheduler = scheduler
+        logger.info("✅ Agendador iniciado - Job de notificações rodará a cada 5 minutos")
     except Exception as e:
-        print(f"Não foi possível iniciar o agendador: {e}")
+        logger.error(f"❌ Não foi possível iniciar o agendador: {e}", exc_info=True)
 
 
 @app.on_event("shutdown")
 def shutdown_event():
+    logger.warning("⛔ Encerrando aplicação Kraken API...")
     sched = getattr(app.state, 'scheduler', None)
     if sched:
         sched.shutdown()
+        logger.info("✅ Agendador finalizado")
 
 # ENDPOINTS DA API
 
@@ -143,8 +176,11 @@ def sync_items(payload: schemas.SyncRequest, db: Session = Depends(get_db)):
 
     Corpo esperado: { items: [...], pushToken: "ExponentPushToken[...]" }
     """
+    logger.info(f"📥 [SYNC] Recebido sincronização | Token: {payload.pushToken[:20]}... | {len(payload.items)} item(ns)")
     try:
         device, saved = crud.save_items_for_device(db, payload.pushToken, payload.items)
+        logger.info(f"✅ [SYNC] {saved} item(ns) salvos para device ID {device.id}")
         return {"ok": True, "message": "Items salvos com sucesso", "saved_count": saved}
     except Exception as e:
+        logger.error(f"❌ [SYNC] Erro ao salvar items: {e}", exc_info=True)
         return {"ok": False, "message": str(e), "saved_count": 0}
