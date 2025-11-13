@@ -4,3 +4,5 @@ sqlalchemy
 pydantic
 python-multipart
 psycopg2-binary
+requests
+apscheduler

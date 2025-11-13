@@ -13,6 +13,11 @@ import models
 import schemas
 from database import get_db, create_tables
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
+import notifications
+from sqlalchemy.orm import Session as DBSession
+
 # Cria a aplicação FastAPI
 app = FastAPI(
     title="Kraken API", 
@@ -27,6 +32,39 @@ async def startup_event():
     Cria as tabelas do banco quando a aplicação inicia
     """
     create_tables()
+    # Agendador diário para enviar notificações
+    try:
+        scheduler = BackgroundScheduler()
+
+        def job_send_notifications():
+            # Esse job roda e envia notificações para dispositivos com itens expirando
+            db = next(get_db())
+            try:
+                pairs = crud.get_devices_with_expiring_items(db, within_days=1)
+                messages = []
+                for device, items in pairs:
+                    # Monta mensagem simples
+                    title = "Itens próximos da validade"
+                    body = f"Você tem {len(items)} item(ns) expirando em breve."
+                    messages.append({"to": device.push_token, "title": title, "body": body})
+                if messages:
+                    notifications.send_many_expo_push(messages)
+            finally:
+                db.close()
+
+        # Agenda para rodar todo dia às 09:00 UTC
+        scheduler.add_job(job_send_notifications, 'cron', hour=9, minute=0)
+        scheduler.start()
+        app.state.scheduler = scheduler
+    except Exception as e:
+        print(f"Não foi possível iniciar o agendador: {e}")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    sched = getattr(app.state, 'scheduler', None)
+    if sched:
+        sched.shutdown()
 
 # ENDPOINTS DA API
 
@@ -89,3 +127,17 @@ def health_check():
         "timestamp": datetime.utcnow(),
         "message": "API Kraken funcionando!"
     }
+
+
+@app.post("/sync", response_model=schemas.SyncResponse)
+def sync_items(payload: schemas.SyncRequest, db: Session = Depends(get_db)):
+    """
+    Recebe `items` e `pushToken` do aplicativo (Expo) e persiste por dispositivo.
+
+    Corpo esperado: { items: [...], pushToken: "ExponentPushToken[...]" }
+    """
+    try:
+        device, saved = crud.save_items_for_device(db, payload.pushToken, payload.items)
+        return {"ok": True, "message": "Items salvos com sucesso", "saved_count": saved}
+    except Exception as e:
+        return {"ok": False, "message": str(e), "saved_count": 0}

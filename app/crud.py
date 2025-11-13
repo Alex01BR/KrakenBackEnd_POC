@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 import hashlib
+from datetime import datetime, timedelta
+from sqlalchemy import and_
 
 def hash_password(password: str) -> str:
     """
@@ -59,3 +61,77 @@ def verify_password(password: str, password_hash: str) -> bool:
     Verifica se a senha está correta
     """
     return hash_password(password) == password_hash
+
+
+def get_or_create_device(db: Session, push_token: str):
+    """Retorna o Device com esse push_token, criando se necessário"""
+    device = db.query(models.Device).filter(models.Device.push_token == push_token).first()
+    if device:
+        return device
+
+    device = models.Device(push_token=push_token)
+    db.add(device)
+    db.commit()
+    db.refresh(device)
+    return device
+
+
+def upsert_pantry_item(db: Session, device: models.Device, item: schemas.Item):
+    """Cria ou atualiza um PantryItem baseado em `external_id` + device"""
+    existing = db.query(models.PantryItem).filter(
+        and_(
+            models.PantryItem.external_id == item.id,
+            models.PantryItem.device_id == device.id,
+        )
+    ).first()
+
+    exp_date = None
+    if item.expirationDate:
+        # Pydantic já transforma em datetime; manter apenas se for datetime
+        exp_date = item.expirationDate
+
+    if existing:
+        existing.name = item.name
+        existing.icon = item.icon
+        existing.category = item.category
+        existing.expiration_date = exp_date
+        existing.quantity = item.quantity
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    new_item = models.PantryItem(
+        external_id=item.id,
+        name=item.name,
+        icon=item.icon,
+        category=item.category,
+        expiration_date=exp_date,
+        quantity=item.quantity,
+        device_id=device.id,
+    )
+    db.add(new_item)
+    db.commit()
+    db.refresh(new_item)
+    return new_item
+
+
+def save_items_for_device(db: Session, push_token: str, items: list):
+    device = get_or_create_device(db, push_token)
+    saved = 0
+    for it in items:
+        upsert_pantry_item(db, device, it)
+        saved += 1
+    return device, saved
+
+
+def get_devices_with_expiring_items(db: Session, within_days: int = 1):
+    """Retorna lista de (Device, [PantryItem,...]) com itens expirando em `within_days`"""
+    cutoff = datetime.utcnow() + timedelta(days=within_days)
+    devices = db.query(models.Device).all()
+    result = []
+    for d in devices:
+        items = [i for i in d.items if i.expiration_date is not None and i.expiration_date <= cutoff]
+        if items:
+            result.append((d, items))
+    return result
