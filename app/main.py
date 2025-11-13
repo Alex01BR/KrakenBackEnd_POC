@@ -37,23 +37,30 @@ async def startup_event():
         scheduler = BackgroundScheduler()
 
         def job_send_notifications():
-            # Esse job roda e envia notificações para dispositivos com itens expirando
+            # Esse job roda a cada 5 minutos e envia notificações para dispositivos com itens expirando em até 7 dias
             db = next(get_db())
             try:
-                pairs = crud.get_devices_with_expiring_items(db, within_days=1)
+                pairs = crud.get_devices_with_expiring_items(db, within_days=7)
                 messages = []
                 for device, items in pairs:
-                    # Monta mensagem simples
-                    title = "Itens próximos da validade"
-                    body = f"Você tem {len(items)} item(ns) expirando em breve."
+                    # Monta mensagem com detalhes dos itens expirando
+                    title = "⚠️ Itens próximos do vencimento"
+                    item_names = ", ".join([it.name for it in items[:3]])  # Até 3 itens no resumo
+                    if len(items) > 3:
+                        body = f"{item_names} e mais {len(items) - 3}. Confira seus itens!"
+                    else:
+                        body = f"{item_names}. Verifique a validade!"
                     messages.append({"to": device.push_token, "title": title, "body": body})
                 if messages:
                     notifications.send_many_expo_push(messages)
+                    print(f"[Notificações] {len(messages)} notificação(ões) enviada(s) em {datetime.utcnow()}")
+            except Exception as e:
+                print(f"[Notificações] Erro ao enviar notificações: {e}")
             finally:
                 db.close()
 
-        # Agenda para rodar todo dia às 09:00 UTC
-        scheduler.add_job(job_send_notifications, 'cron', hour=9, minute=0)
+        # Agenda para rodar a cada 5 minutos
+        scheduler.add_job(job_send_notifications, 'interval', minutes=5)
         scheduler.start()
         app.state.scheduler = scheduler
     except Exception as e:

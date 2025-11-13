@@ -125,13 +125,17 @@ def save_items_for_device(db: Session, push_token: str, items: list):
     return device, saved
 
 
-def get_devices_with_expiring_items(db: Session, within_days: int = 1):
-    """Retorna lista de (Device, [PantryItem,...]) com itens expirando em `within_days`"""
-    cutoff = datetime.utcnow() + timedelta(days=within_days)
+def get_devices_with_expiring_items(db: Session, within_days: int = 7):
+    """Retorna lista de (Device, [PantryItem,...]) com itens expirando em até `within_days` dias (não incluindo já vencidos)"""
+    now = datetime.utcnow()
+    cutoff = now + timedelta(days=within_days)
     devices = db.query(models.Device).all()
     result = []
     for d in devices:
-        items = [i for i in d.items if i.expiration_date is not None and i.expiration_date <= cutoff]
+        # Filtra itens que estão entre agora e dentro de within_days (não vencidos e vencendo em breve)
+        items = [i for i in d.items if i.expiration_date is not None and now <= i.expiration_date <= cutoff]
         if items:
+            # Ordena por data de vencimento (mais próximos primeiro)
+            items.sort(key=lambda x: x.expiration_date)
             result.append((d, items))
     return result
