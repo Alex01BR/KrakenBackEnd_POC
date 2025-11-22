@@ -331,27 +331,45 @@ def register_device_job(device_id: int, alert_days: float, user_name: str = None
 
 @app.post("/sync", response_model=schemas.SyncResponse)
 def sync_items(payload: schemas.SyncRequest, db: Session = Depends(get_db)):
-    """
-    Recebe `items`, `pushToken`, `userName` (opcional), e `alertDays` (opcional) do aplicativo (Expo) e persiste por dispositivo.
 
-    Corpo esperado: { items: [...], pushToken: "ExponentPushToken[...]", userName: "João", alertDays: 7 }
-    """
-    logger.info(f"📥 [SYNC] Recebido sincronização | Token: {payload.pushToken[:20]}... | Usuario: {payload.userName} | alertDays: {payload.alertDays} | {len(payload.items)} item(ns)")
+    logger.info(f"📥 [SYNC] Recebido sync | Token: {payload.pushToken[:20]} | alertDays={payload.alertDays}")
+
+    # 1️⃣ Pega o valor ANTES de alterar
+    existing_device = db.query(models.Device).filter(
+        models.Device.push_token == payload.pushToken
+    ).first()
+
+    old_alert_days = existing_device.alert_days if existing_device else None
+
     try:
+        # 2️⃣ Salva itens E atualiza alert_days se vier no payload
         device, saved, deleted_count, deleted_ids = crud.save_items_for_device(
-            db, 
-            payload.pushToken, 
-            payload.items, 
-            user_name=payload.userName, 
+            db,
+            payload.pushToken,
+            payload.items,
+            user_name=payload.userName,
             alert_days=payload.alertDays
         )
-        logger.info(f"✅ [SYNC] {saved} item(ns) salvos para device ID {device.id} (user: {device.user_name}, alert_days: {device.alert_days}) | {deleted_count} item(ns) excluídos")
-        
-        # Registra ou atualiza o job de notificação para este device
-        alert_days = device.alert_days if device.alert_days else 7
-        register_device_job(device.id, alert_days, device.user_name)
-        
-        return {"ok": True, "message": "Items sincronizados com sucesso", "saved_count": saved, "deleted_count": deleted_count, "deleted_ids": deleted_ids}
+
+        new_alert_days = device.alert_days
+
+        logger.info(f"🔎 old={old_alert_days} | new={new_alert_days} | payload={payload.alertDays}")
+
+        # 3️⃣ Só recria job SE o valor realmente mudou
+        if payload.alertDays is not None and old_alert_days != new_alert_days:
+            logger.info(f"🔁 alertDays mudou: {old_alert_days} → {new_alert_days} — recriando job")
+            register_device_job(device.id, new_alert_days, device.user_name)
+        else:
+            logger.info("⏸️ alertDays não mudou — job mantido")
+
+        return {
+            "ok": True,
+            "message": "Items sincronizados com sucesso",
+            "saved_count": saved,
+            "deleted_count": deleted_count,
+            "deleted_ids": deleted_ids
+        }
     except Exception as e:
         logger.error(f"❌ [SYNC] Erro ao salvar items: {e}", exc_info=True)
-        return {"ok": False, "message": str(e), "saved_count": 0, "deleted_count": 0, "deleted_ids": []}
+        return {"ok": False, "message": str(e)}
+
