@@ -8,6 +8,9 @@ import models
 import schemas
 import hashlib
 from datetime import datetime, timedelta
+import logging
+import json
+from sqlalchemy import text
 from sqlalchemy import and_
 
 def hash_password(password: str) -> str:
@@ -72,11 +75,31 @@ def get_or_create_device(db: Session, push_token: str, user_name: str = None, al
         # Atualiza APENAS se foram fornecidos (não None)
         if user_name is not None:
             device.user_name = user_name
+        alert_changed = False
+        old_alert = device.alert_days
         if alert_days is not None:
+            # Only mark as changed if different
+            try:
+                if float(device.alert_days) != float(alert_days):
+                    alert_changed = True
+            except Exception:
+                alert_changed = True
             device.alert_days = alert_days
         db.add(device)
         db.commit()
         db.refresh(device)
+
+        # Notify scheduler via Postgres NOTIFY so it can reschedule immediately
+        if alert_changed:
+            try:
+                payload = json.dumps({"device_id": device.id, "alert_days": device.alert_days})
+                # Use pg_notify via SELECT to ensure it works over SQLAlchemy
+                db.execute(text("SELECT pg_notify('device_changes', :payload)"), {"payload": payload})
+                db.commit()
+                logging.getLogger('crud').info(f"[CRUD SYNC] Notified device_changes for device {device.id} (alert_days={device.alert_days})")
+            except Exception:
+                logging.getLogger('crud').exception("Failed to send NOTIFY for device_changes")
+
         return device
 
     # Ao criar novo device, usar padrões se não fornecidos
@@ -236,15 +259,39 @@ def save_items_for_device(db: Session, push_token: str, items: list, user_name: 
 
 def get_devices_with_expiring_items(db: Session, within_days: int = 7):
     """Retorna lista de (Device, [PantryItem,...]) com itens expirando em até `within_days` dias (não incluindo já vencidos)"""
+    logger = logging.getLogger("crud")
     now = datetime.utcnow()
-    cutoff = now + timedelta(days=within_days)
+    # allow within_days to be float (fractions of day)
+    try:
+        days_float = float(within_days)
+    except Exception:
+        days_float = 7.0
+    cutoff = now + timedelta(days=days_float)
+    logger.debug(f"[crud] get_devices_with_expiring_items now={now.isoformat()} cutoff={cutoff.isoformat()} within_days={days_float}")
     devices = db.query(models.Device).all()
     result = []
     for d in devices:
-        # Filtra itens que estão entre agora e dentro de within_days (não vencidos e vencendo em breve)
-        items = [i for i in d.items if i.expiration_date is not None and now <= i.expiration_date <= cutoff]
+        examined = []
+        items = []
+        for i in d.items:
+            if i.expiration_date is not None:
+                # compute remaining time in seconds
+                try:
+                    remaining = i.expiration_date - now
+                    remaining_seconds = remaining.total_seconds()
+                except Exception:
+                    remaining_seconds = None
+                examined.append((i.external_id, i.name, i.expiration_date.isoformat() if i.expiration_date else None, remaining_seconds))
+                # include if item not yet expired and within the alert window
+                if remaining_seconds is not None and remaining_seconds > 0 and remaining <= timedelta(days=days_float):
+                    items.append(i)
+            else:
+                examined.append((i.external_id, i.name, None, None))
+
         if items:
-            # Ordena por data de vencimento (mais próximos primeiro)
             items.sort(key=lambda x: x.expiration_date)
             result.append((d, items))
+            logger.debug(f"[crud] device={d.id} found={len(items)} examined={len(examined)} details={examined}")
+        else:
+            logger.debug(f"[crud] device={d.id} found=0 examined={len(examined)} details={examined}")
     return result

@@ -14,7 +14,6 @@ import crud
 import models
 import schemas
 from database import get_db, create_tables
-from scheduler import get_scheduler, shutdown_scheduler
 
 from datetime import datetime
 import notifications
@@ -61,125 +60,20 @@ async def validation_exception_handler(request: Request, exc: ValidationError):
         },
     )
 
-# Evento que roda quando a aplicação inicia
 @app.on_event("startup")
 async def startup_event():
     """
-    Cria as tabelas do banco quando a aplicação inicia e inicializa o scheduler SINGLETON
+    Cria as tabelas do banco quando a aplicação inicia. Scheduler foi separado para outro processo.
     """
     logger.info("🚀 Iniciando aplicação Kraken API...")
     create_tables()
     logger.info("✅ Tabelas do banco criadas/verificadas")
-    
-    try:
-        # Usar scheduler SINGLETON (apenas 1 por aplicação)
-        scheduler = get_scheduler()
-        
-        # Se já está rodando, apenas usar a instância existente
-        if scheduler.running:
-            logger.info("✅ Scheduler já estava rodando em outro worker, usando instância singleton")
-            app.state.scheduler = scheduler
-            return
-        
-        logger.info("🔄 Configurando jobs do scheduler singleton...")
-
-        def create_device_notification_job(device_id: int, alert_days: float, user_name: str = None):
-            """Cria uma função de job específica para um device"""
-            # Usar lock por device para evitar execução paralela
-            device_lock = get_device_lock(device_id)
-            
-            def job_send_notification_for_device():
-                # Tenta adquirir o lock SEM BLOQUEAR
-                if not device_lock.acquire(blocking=False):
-                    logger.debug(f"⚠️ [JOB DEVICE {device_id}] Job já está em execução, pulando esta rodada")
-                    return
-                
-                try:
-                    logger.info(f"⏰ [JOB DEVICE {device_id}] Iniciando verificação para device {device_id} ({user_name or 'sem nome'}) | alert_days: {alert_days}")
-                    
-                    db = next(get_db())
-                    try:
-                        device = db.query(models.Device).filter(models.Device.id == device_id).first()
-                        if not device:
-                            logger.warning(f"⚠️ [JOB DEVICE {device_id}] Device não encontrado")
-                            return
-                        
-                        # Busca itens que expiram dentro de alert_days
-                        # Use a fixed notification window of 7 days for alerts
-                        pairs = crud.get_devices_with_expiring_items(db, within_days=7)
-                        device_pairs = [(d, items) for d, items in pairs if d.id == device_id]
-                        
-                        if device_pairs:
-                            for _, items in device_pairs:
-                                logger.info(f"  📦 Encontrados {len(items)} item(ns) próximos do vencimento para {device.user_name or 'device'}")
-                                for item in items:
-                                    logger.info(f"      - {item.name} | Vence em: {item.expiration_date}")
-                                
-                                # Monta mensagem
-                                title = "⚠️ Itens próximos do vencimento"
-                                item_names = ", ".join([it.name for it in items[:3]])
-                                if len(items) > 3:
-                                    body = f"{item_names} e mais {len(items) - 3}. Confira seus itens!"
-                                else:
-                                    body = f"{item_names}. Verifique a validade!"
-                                
-                                # Envia notificação
-                                logger.info(f"📤 [JOB DEVICE {device_id}] Enviando notificação para {device.push_token[:20]}...")
-                                result = notifications.send_expo_push(device.push_token, title, body, {})
-                                if result.get('ok'):
-                                    logger.info(f"✅ [JOB DEVICE {device_id}] Notificação enviada com sucesso!")
-                                else:
-                                    logger.error(f"❌ [JOB DEVICE {device_id}] Erro ao enviar: {result}")
-                        else:
-                            logger.debug(f"ℹ️ [JOB DEVICE {device_id}] Nenhum item próximo do vencimento")
-                    except Exception as e:
-                        logger.error(f"❌ [JOB DEVICE {device_id}] Erro ao processar device: {e}", exc_info=True)
-                    finally:
-                        db.close()
-                finally:
-                    device_lock.release()
-            
-            return job_send_notification_for_device
-
-        # Carrega devices existentes e cria jobs para cada um
-        db = next(get_db())
-        try:
-            devices = db.query(models.Device).all()
-            logger.info(f"📱 Carregando {len(devices)} device(s) para agendamento...")
-            
-            for device in devices:
-                alert_days = device.alert_days if device.alert_days else 7
-                
-                # Converter para minutos se for < 1 dia
-                if alert_days < 1:
-                    interval_minutes = alert_days * 24 * 60
-                    job_func = create_device_notification_job(device.id, alert_days, device.user_name)
-                    job_id = f"device_{device.id}"
-                    scheduler.add_job(job_func, 'interval', minutes=interval_minutes, id=job_id, max_instances=1, replace_existing=True)
-                    logger.info(f"  ✅ Job criado para Device {device.id} ({device.user_name or 'sem nome'}) - intervalo: {interval_minutes:.2f} minuto(s)")
-                else:
-                    job_func = create_device_notification_job(device.id, alert_days, device.user_name)
-                    job_id = f"device_{device.id}"
-                    scheduler.add_job(job_func, 'interval', days=alert_days, id=job_id, max_instances=1, replace_existing=True)
-                    logger.info(f"  ✅ Job criado para Device {device.id} ({device.user_name or 'sem nome'}) - intervalo: {alert_days} dia(s)")
-        finally:
-            db.close()
-        
-        # Inicia o scheduler (idempotente - se já está rodando, não faz nada)
-        if not scheduler.running:
-            scheduler.start()
-        
-        app.state.scheduler = scheduler
-        logger.info("✅ Agendador iniciado - Jobs por device configurados com alert_days específicos")
-    except Exception as e:
-        logger.error(f"❌ Não foi possível iniciar o agendador: {e}", exc_info=True)
 
 
 @app.on_event("shutdown")
 def shutdown_event():
     logger.warning("⛔ Encerrando aplicação Kraken API...")
-    shutdown_scheduler()
-    logger.info("✅ Scheduler finalizado")
+    logger.info("ℹ️ Scheduler é executado em processo separado; nenhum shutdown local necessário")
 
 # ENDPOINTS DA API
 
@@ -355,12 +249,14 @@ def sync_items(payload: schemas.SyncRequest, db: Session = Depends(get_db)):
 
         logger.info(f"🔎 old={old_alert_days} | new={new_alert_days} | payload={payload.alertDays}")
 
-        # 3️⃣ Só recria job SE o valor realmente mudou
+        # 3️⃣ Scheduler foi separado para outro processo/container. Ele irá ler o banco
+        # e reagendar jobs conforme necessário. Aqui apenas registramos que houve
+        # uma mudança de alert_days, caso o scheduler precise reagir (ele fará uma
+        # reconciliação no próximo ciclo).
         if payload.alertDays is not None and old_alert_days != new_alert_days:
-            logger.info(f"🔁 alertDays mudou: {old_alert_days} → {new_alert_days} — recriando job")
-            register_device_job(device.id, new_alert_days, device.user_name)
+            logger.info(f"🔁 alertDays mudou: {old_alert_days} → {new_alert_days} — scheduler externo detectará e reagendará")
         else:
-            logger.info("⏸️ alertDays não mudou — job mantido")
+            logger.info("⏸️ alertDays não mudou — nada a fazer no scheduler externo")
 
         return {
             "ok": True,
