@@ -10,6 +10,8 @@ services:
       POSTGRES_PASSWORD: postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+     - "5432:5432" # Mapeia a porta padrão do PostgreSQL (opcional, útil para desenvolvimento local)
     networks:
       - traefik-public
   
@@ -23,6 +25,8 @@ services:
     # Variáveis de ambiente para conectar ao PostgreSQL
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/kraken_db
+      - WORKERS_PER_CORE=0
+      - MAX_WORKERS=1
     
     # Depende do banco de dados
     depends_on:

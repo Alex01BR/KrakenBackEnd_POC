@@ -43,9 +43,13 @@ class Item(BaseModel):
 class SyncRequest(BaseModel):
     items: List[Item]
     pushToken: str
+    userName: Optional[str] = None  # Nome do usuário (opcional)
+    alertDays: Optional[float] = None  # Dias de alerta (opcional; suporta frações para minutos)
 
 
 class SyncResponse(BaseModel):
     ok: bool
     message: Optional[str] = None
     saved_count: Optional[int] = 0
+    deleted_count: Optional[int] = 0
+    deleted_ids: Optional[List[int]] = []

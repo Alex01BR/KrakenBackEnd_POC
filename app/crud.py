@@ -63,13 +63,28 @@ def verify_password(password: str, password_hash: str) -> bool:
     return hash_password(password) == password_hash
 
 
-def get_or_create_device(db: Session, push_token: str):
-    """Retorna o Device com esse push_token, criando se necessário"""
+def get_or_create_device(db: Session, push_token: str, user_name: str = None, alert_days: float = None):
+    """Retorna o Device com esse push_token, criando se necessário. 
+    Atualiza user_name e alert_days APENAS se fornecidos (não sobrescreve com padrões).
+    """
     device = db.query(models.Device).filter(models.Device.push_token == push_token).first()
     if device:
+        # Atualiza APENAS se foram fornecidos (não None)
+        if user_name is not None:
+            device.user_name = user_name
+        if alert_days is not None:
+            device.alert_days = alert_days
+        db.add(device)
+        db.commit()
+        db.refresh(device)
         return device
 
-    device = models.Device(push_token=push_token)
+    # Ao criar novo device, usar padrões se não fornecidos
+    device = models.Device(
+        push_token=push_token, 
+        user_name=user_name,
+        alert_days=alert_days if alert_days is not None else 7  # Padrão: 7 dias para novo device
+    )
     db.add(device)
     db.commit()
     db.refresh(device)
@@ -116,13 +131,107 @@ def upsert_pantry_item(db: Session, device: models.Device, item: schemas.Item):
     return new_item
 
 
-def save_items_for_device(db: Session, push_token: str, items: list):
-    device = get_or_create_device(db, push_token)
-    saved = 0
+def save_items_for_device(db: Session, push_token: str, items: list, user_name: str = None, alert_days: float = None):
+    """Sincroniza a lista completa enviada pelo dispositivo.
+
+    Estratégia elegante e atômica:
+    - Busca todos os itens existentes do device em memória
+    - Constrói mapeamentos (external_id -> objeto) para DB e payload
+    - Atualiza objetos existentes em memória e cria novos objetos para novos IDs
+    - Calcula quais IDs devem ser removidos (existentes - recebidos)
+    - Executa deleções em lote
+    - Faz um único commit ao final para garantir atomicidade
+
+    Retorna: (device, saved_count, deleted_count, deleted_ids)
+    """
+    import logging
+    logger = logging.getLogger("crud")
+
+    device = get_or_create_device(db, push_token, user_name=user_name, alert_days=alert_days)
+
+    # Carrega itens existentes do DB para este device
+    db_items = db.query(models.PantryItem).filter(models.PantryItem.device_id == device.id).all()
+    existing_map = {}
+    for obj in db_items:
+        try:
+            existing_map[int(obj.external_id)] = obj
+        except Exception:
+            existing_map[obj.external_id] = obj
+
+    # Normaliza e mapeia os itens recebidos
+    incoming_map = {}
     for it in items:
-        upsert_pantry_item(db, device, it)
+        try:
+            ext_id = int(it.id)
+        except Exception:
+            ext_id = it.id
+        incoming_map[ext_id] = it
+
+    logger.info(f"[CRUD SYNC] Device {device.id} - ANTES DA SINCRONIZAÇÃO:")
+    logger.info(f"[CRUD SYNC]   - IDs no DB: {sorted(existing_map.keys())}")
+    logger.info(f"[CRUD SYNC]   - IDs recebidos do app: {sorted(incoming_map.keys())}")
+
+    saved = 0
+    created = 0
+    updated = 0
+
+    # Atualiza existentes e cria novos (em memória)
+    for ext_id, incoming in incoming_map.items():
+        if ext_id in existing_map:
+            obj = existing_map[ext_id]
+            obj.name = incoming.name
+            obj.icon = incoming.icon
+            obj.category = incoming.category
+            obj.quantity = incoming.quantity
+            obj.expiration_date = incoming.expirationDate if incoming.expirationDate else None
+            db.add(obj)
+            updated += 1
+            logger.info(f"[CRUD SYNC]   - ✏️ ATUALIZADO: ID {ext_id} ({incoming.name})")
+        else:
+            new_item = models.PantryItem(
+                external_id=ext_id,
+                name=incoming.name,
+                icon=incoming.icon,
+                category=incoming.category,
+                expiration_date=incoming.expirationDate if incoming.expirationDate else None,
+                quantity=incoming.quantity,
+                device_id=device.id,
+            )
+            db.add(new_item)
+            created += 1
+            logger.info(f"[CRUD SYNC]   - ✅ CRIADO: ID {ext_id} ({incoming.name})")
         saved += 1
-    return device, saved
+
+    # IDs a deletar: existentes no DB mas que não vieram no payload
+    existing_ids = set(existing_map.keys())
+    incoming_ids = set(incoming_map.keys())
+    to_delete = existing_ids - incoming_ids
+
+    logger.info(f"[CRUD SYNC]   - IDs que estavam no DB: {sorted(existing_ids)}")
+    logger.info(f"[CRUD SYNC]   - IDs que vieram no payload: {sorted(incoming_ids)}")
+    logger.info(f"[CRUD SYNC]   - IDs a DELETAR (no DB mas não no payload): {sorted(to_delete)}")
+
+    deleted_ids = []
+    deleted_count = 0
+    if to_delete:
+        # Buscar objetos a deletar para coletar seus external_ids e então deletar
+        objs_to_delete = db.query(models.PantryItem).filter(
+            models.PantryItem.device_id == device.id,
+            models.PantryItem.external_id.in_(list(to_delete))
+        ).all()
+        deleted_ids = [int(o.external_id) if hasattr(o.external_id, '__int__') else o.external_id for o in objs_to_delete]
+        for o in objs_to_delete:
+            logger.info(f"[CRUD SYNC]   - ❌ DELETADO: ID {o.external_id} ({o.name})")
+            db.delete(o)
+        deleted_count = len(objs_to_delete)
+
+    # Commit único
+    db.commit()
+
+    logger.info(f"[CRUD SYNC] RESULTADO FINAL: created={created}, updated={updated}, deleted={deleted_count}")
+    logger.info(f"[CRUD SYNC] Device {device.id} - IDs mantidos: {sorted(incoming_ids)}")
+
+    return device, saved, deleted_count, deleted_ids
 
 
 def get_devices_with_expiring_items(db: Session, within_days: int = 7):

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, BigInteger, Float
 from datetime import datetime
 from database import Base
 from sqlalchemy.orm import relationship
@@ -28,19 +28,21 @@ class User(Base):
 
 class Device(Base):
     """
-    Representa um dispositivo/expo push token associado a um (opcional) usuário
+    Representa um dispositivo/expo push token com configurações personalizadas de notificação
     """
     __tablename__ = "devices"
 
     id = Column(Integer, primary_key=True, index=True)
     push_token = Column(String, unique=True, nullable=False, index=True)
+    user_name = Column(String, nullable=True)  # Nome do usuário do dispositivo
+    alert_days = Column(Float, default=7)  # Dias de antecedência para enviar notificação (padrão: 7 dias; suporta frações para minutos)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relacionamento com itens da despensa
     items = relationship("PantryItem", back_populates="device")
 
     def __repr__(self):
-        return f"<Device(id={self.id}, push_token='{self.push_token}')>"
+        return f"<Device(id={self.id}, user_name='{self.user_name}', alert_days={self.alert_days}, token='{self.push_token[:20]}...')>"
 
 
 class PantryItem(Base):
