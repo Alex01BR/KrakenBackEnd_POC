@@ -34,13 +34,14 @@ def create_device_job_function(device_id: int, alert_days: float, user_name: str
 
     def job(alert_days_param=None):
         # Allow an optional alert_days passed via job kwargs; fall back to captured value
-        # _alert_days represents the check frequency (in days) for this device
-        _alert_days = alert_days_param if alert_days_param is not None else alert_days
+        # Here: alert_days is the notification window (in days). Check frequency is FIXED = 1 day.
+        _alert_window = alert_days_param if alert_days_param is not None else alert_days
+        CHECK_FREQUENCY_DAYS = 0.002
         if not device_lock.acquire(blocking=False):
             logger.debug(f"⚠️ [JOB DEVICE {device_id}] Job already running, skipping this run")
             return
         try:
-            logger.info(f"⏰ [JOB DEVICE {device_id}] Running check (check_frequency_days={_alert_days})")
+            logger.info(f"⏰ [JOB DEVICE {device_id}] Running check (check_frequency_days={CHECK_FREQUENCY_DAYS}, alert_window_days={_alert_window})")
             db = next(get_db())
             try:
                 device = db.query(models.Device).filter(models.Device.id == device_id).first()
@@ -50,49 +51,40 @@ def create_device_job_function(device_id: int, alert_days: float, user_name: str
                 # Check if the device's check frequency changed in the DB; if so, reschedule this job immediately
                 device_db_alert = device.alert_days if device.alert_days else 7
                 try:
-                    if abs(float(device_db_alert) - float(_alert_days)) > 1e-9:
-                        logger.info(f"  🔁 Detected alert_days change for device {device_id}: {_alert_days} -> {device_db_alert}; rescheduling job")
+                    if abs(float(device_db_alert) - float(_alert_window)) > 1e-9:
+                        logger.info(f"  🔁 Detected alert window change for device {device_id}: {_alert_window} -> {device_db_alert}; updating job metadata")
                         if scheduler is not None:
                             job_id = f"device_{device_id}"
                             existing = scheduler.get_job(job_id)
                             old_next = existing.next_run_time if existing is not None else None
-                            # compute trigger kwargs for new alert
-                            if device_db_alert < 1:
-                                minutes = device_db_alert * 24 * 60
-                                new_trigger_kwargs = {'minutes': minutes}
-                                new_display = f"{minutes:.2f} minute(s)"
-                            else:
-                                new_trigger_kwargs = {'days': device_db_alert}
-                                new_display = f"{device_db_alert} day(s)"
-
+                            new_display = f"{device_db_alert} day(s)"
                             try:
-                                # remove and re-add with updated kwargs, preserving next_run_time
+                                # remove and re-add with SAME trigger (1 day) but updated kwargs, preserving next_run_time
                                 if existing is not None:
                                     scheduler.remove_job(job_id)
                                 new_job_func = create_device_job_function(device_id, device_db_alert, device.user_name, scheduler)
                                 if old_next:
-                                    scheduler.add_job(new_job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, kwargs={'alert_days_param': device_db_alert}, **new_trigger_kwargs)
+                                    scheduler.add_job(new_job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, kwargs={'alert_days_param': device_db_alert}, days=CHECK_FREQUENCY_DAYS)
                                 else:
-                                    scheduler.add_job(new_job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, kwargs={'alert_days_param': device_db_alert}, **new_trigger_kwargs)
-                                logger.info(f"  🔁 Rescheduled device {device_id} - {new_display} (preserved next_run={old_next})")
+                                    scheduler.add_job(new_job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, kwargs={'alert_days_param': device_db_alert}, days=CHECK_FREQUENCY_DAYS)
+                                logger.info(f"  🔁 Updated job metadata for device {device_id} - notify_window={new_display} (preserved next_run={old_next})")
                             except Exception:
-                                logger.exception(f"Failed to reschedule job for device {device_id} from job run")
+                                logger.exception(f"Failed to update job metadata for device {device_id} from job run")
 
-                        # update local _alert_days so the running job uses the new value
-                        _alert_days = device_db_alert
+                        # update local _alert_window so the running job uses the new value
+                        _alert_window = device_db_alert
                 except Exception:
-                    logger.exception(f"Error checking/rescheduling alert_days for device {device_id}")
+                    logger.exception(f"Error checking/updating alert window for device {device_id}")
 
-                # Diagnostic logs: show notification window used for this run
-                # Notification window is FIXED (7 days) — the device's alert_days is the check frequency only
+                # Diagnostic logs: show notification window used for this run (comes from device)
                 from datetime import datetime, timedelta as _td
                 now = datetime.utcnow()
-                NOTIFY_WINDOW_DAYS = 7.0
-                cutoff = now + _td(days=NOTIFY_WINDOW_DAYS)
-                logger.info(f"  [DIAG] now={now.isoformat()} cutoff={cutoff.isoformat()} (notify_window_days={NOTIFY_WINDOW_DAYS})")
+                notify_window = float(_alert_window)
+                cutoff = now + _td(days=notify_window)
+                logger.info(f"  [DIAG] now={now.isoformat()} cutoff={cutoff.isoformat()} (notify_window_days={notify_window})")
 
-                # Notify items expiring within fixed notify window (7 days)
-                pairs = crud.get_devices_with_expiring_items(db, within_days=NOTIFY_WINDOW_DAYS)
+                # Notify items expiring within device-defined notify window
+                pairs = crud.get_devices_with_expiring_items(db, within_days=notify_window)
                 # Log what pairs returned for debugging
                 try:
                     found = 0
@@ -144,14 +136,9 @@ def ensure_job_for_device(scheduler: BackgroundScheduler, device_id: int):
             logger.warning(f"Cannot ensure job for device {device_id}: not found in DB")
             return
         alert_days = device.alert_days if device.alert_days else 7
-        # compute trigger kwargs
-        if alert_days < 1:
-            minutes = alert_days * 24 * 60
-            trigger_kwargs = {'minutes': minutes}
-            display = f"{minutes:.2f} minute(s)"
-        else:
-            trigger_kwargs = {'days': alert_days}
-            display = f"{alert_days} day(s)"
+        # alert_days is notification window; check frequency is fixed at 1 day
+        trigger_kwargs = {'days': 1}
+        display = f"check every 1 day"
 
         job_id = f"device_{device.id}"
         existing = scheduler.get_job(job_id)
@@ -175,10 +162,11 @@ def ensure_job_for_device(scheduler: BackgroundScheduler, device_id: int):
                         existing_seconds = trig.interval.total_seconds()
                     scheduler.remove_job(job_id)
                     if existing_seconds is not None:
-                        # translate seconds into minutes/days conservatively: use seconds via interval
+                        # preserve existing interval but add kwargs; convert seconds to interval
                         scheduler.add_job(job_func, 'interval', seconds=int(existing_seconds), id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, kwargs={'alert_days_param': alert_days})
                     else:
-                        scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, kwargs={'alert_days_param': alert_days}, **trigger_kwargs)
+                        # default to daily checks and add kwargs
+                        scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, kwargs={'alert_days_param': alert_days}, days=1)
                     logger.info(f"  🔧 Normalized job metadata for device {device.id} - {display} (preserved next_run={old_next})")
                 except Exception:
                     logger.exception(f"Failed to normalize job for device {device.id}")
@@ -250,18 +238,13 @@ def schedule_all_devices(scheduler: BackgroundScheduler):
                 current_job_ids = []
             logger.debug(f"  [DEBUG] current scheduler job ids: {current_job_ids}")
             alert_days = device.alert_days if device.alert_days else 7
+            # alert_days is treated as notification window (days). Frequency for checks is fixed at 1 day.
             job_func = create_device_job_function(device.id, alert_days, device.user_name, scheduler)
             job_id = f"device_{device.id}"
-            # Determine desired interval in seconds for comparison
-            if alert_days < 1:
-                minutes = alert_days * 24 * 60
-                desired_seconds = minutes * 60
-                trigger_kwargs = {'minutes': minutes}
-                display = f"{minutes:.2f} minute(s)"
-            else:
-                desired_seconds = alert_days * 24 * 3600
-                trigger_kwargs = {'days': alert_days}
-                display = f"{alert_days} day(s)"
+            # Fixed check frequency: 1 day
+            trigger_kwargs = {'days': 1}
+            display = f"check every 1 day"
+            desired_seconds = 24 * 3600
 
             existing = scheduler.get_job(job_id)
             if existing:
@@ -291,13 +274,13 @@ def schedule_all_devices(scheduler: BackgroundScheduler):
                         if job_alert_float is None or abs(job_alert_float - alert_days) > 1e-9:
                             old_next = existing.next_run_time
                             scheduler.remove_job(job_id)
-                            # create new job with same next_run_time to avoid postponing
+                            # create new job with same next_run_time to avoid postponing; trigger stays daily
                             job_func = create_device_job_function(device.id, alert_days, device.user_name, scheduler)
                             try:
                                 if old_next:
-                                    scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, kwargs={'alert_days_param': alert_days}, **trigger_kwargs)
+                                    scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, kwargs={'alert_days_param': alert_days}, days=1)
                                 else:
-                                    scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, kwargs={'alert_days_param': alert_days}, **trigger_kwargs)
+                                    scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, kwargs={'alert_days_param': alert_days}, days=1)
                                 logger.info(f"  🔁 Rescheduled device {device.id} - {display} (preserved next_run={old_next})")
                                 # trigger an immediate run so updated alert_days takes effect right away
                                 try:
@@ -316,13 +299,13 @@ def schedule_all_devices(scheduler: BackgroundScheduler):
                             if abs(existing_seconds - desired_seconds) > 1:
                                 old_next = existing.next_run_time
                                 scheduler.remove_job(job_id)
-                                # create new job with same next_run_time to avoid postponing
+                                # create new job with same next_run_time to avoid postponing; trigger stays daily
                                 job_func = create_device_job_function(device.id, alert_days, device.user_name, scheduler)
                                 try:
                                     if old_next:
-                                        scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, **trigger_kwargs)
+                                        scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, next_run_time=old_next, days=1)
                                     else:
-                                        scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, **trigger_kwargs)
+                                        scheduler.add_job(job_func, 'interval', id=job_id, max_instances=1, replace_existing=True, days=1)
                                     logger.info(f"  🔁 Rescheduled device {device.id} - {display} (preserved next_run={old_next})")
                                     try:
                                         threading.Thread(target=job_func, daemon=True).start()
