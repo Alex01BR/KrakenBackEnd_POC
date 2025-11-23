@@ -16,7 +16,7 @@ import os
 import json
 
 # Global check frequency (days). Can be set with env var CHECK_FREQUENCY_DAYS, supports decimals (e.g. 0.0035).
-CHECK_FREQUENCY_DAYS = float(os.environ.get('CHECK_FREQUENCY_DAYS', '1.0'))
+CHECK_FREQUENCY_DAYS = float(os.environ.get('CHECK_FREQUENCY_DAYS', '0.002'))
 
 # Logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
